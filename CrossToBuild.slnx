@@ -1,0 +1,8 @@
+﻿<Solution>
+  <Project Path="LeanCommon.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="CW.Common.csproj" />
+  <Project Path="DOTween.Modules.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="LeanPool.csproj" />
+</Solution>

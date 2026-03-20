@@ -28,38 +28,39 @@ namespace GameJamKit.Scripts.Utils.Singleton
 
                 lock (_lock)
                 {
-                    if (_instance == null)
+                    lock (_lock)
                     {
-                        _instance = (T)FindObjectOfType(typeof(T));
-
-                        if (FindObjectsOfType(typeof(T)).Length > 1)
-                        {
-                            Debug.LogError("[Singleton] Something went really wrong " +
-                                           " - there should never be more than 1 singleton!" +
-                                           " Reopening the scene might fix it.");
-                            return _instance;
-                        }
-
                         if (_instance == null)
                         {
-                            var singleton = new GameObject();
-                            _instance = singleton.AddComponent<T>();
-                            singleton.name = "(singleton) " + typeof(T);
+                            _instance = FindFirstObjectByType<T>(); // Fixed: FindObjectOfType → FindFirstObjectByType
 
-                            DontDestroyOnLoad(singleton);
+                            if (FindObjectsByType<T>(FindObjectsSortMode.None).Length > 1)
+                            { // Fixed: FindObjectsOfType → FindObjectsByType(None)
+                                Debug.LogError("[Singleton] Multiple singletons! Reopen scene.");
+                                return _instance;
+                            }
 
-                            Debug.Log("[Singleton] An instance of " + typeof(T) +
-                                      " is needed in the scene, so '" + singleton +
-                                      "' was created with DontDestroyOnLoad.");
+                            if (_instance == null)
+                            {
+                                var singleton = new GameObject();
+                                _instance = singleton.AddComponent<T>();
+                                singleton.name = "(singleton) " + typeof(T);
+
+                                DontDestroyOnLoad(singleton);
+
+                                Debug.Log("[Singleton] An instance of " + typeof(T) +
+                                          " is needed in the scene, so '" + singleton +
+                                          "' was created with DontDestroyOnLoad.");
+                            }
+                            else
+                            {
+                                Debug.Log("[Singleton] Using instance already created: " +
+                                          _instance.gameObject.name);
+                            }
                         }
-                        else
-                        {
-                            Debug.Log("[Singleton] Using instance already created: " +
-                                      _instance.gameObject.name);
-                        }
+
+                        return _instance;
                     }
-
-                    return _instance;
                 }
             }
         }
