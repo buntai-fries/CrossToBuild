@@ -3,10 +3,10 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
 [RequireComponent(typeof(Rigidbody2D), typeof(SpriteRenderer))]
+
 public class Player : MonoBehaviour
 {
     [Header("Movement")]
-    public float runSpeed = 5.0f;
     public float jumpForce = 10f;
     public float coyoteTime = 0.1f;
 
@@ -50,43 +50,41 @@ public class Player : MonoBehaviour
     {
         GroundCheck();
         HealthUpdate();
-        // ...
-        if (Keyboard.current.spaceKey.isPressed && rb.linearVelocity.y > 0)
-        { // GetKey equiv
-            rb.linearVelocity += Vector2.up * Physics2D.gravity.y * 0.5f * Time.deltaTime;
-        }
+        Jump();
 
-    }
-
-    void FixedUpdate()
-    {
-        // Auto-run right (endless style)
-        rb.linearVelocity = new Vector2(runSpeed + (industryExcess * 0.2f),
-                            rb.linearVelocity.y);
-        FlipSprite();
     }
 
     void GroundCheck()
     {
-        isGrounded = Physics2D.Raycast(transform.position, Vector2.down, 0.6f,
-                     LayerMask.GetMask("Ground"));
+        float playerHeight = sr.bounds.size.y * 0.5f - 0.05f;
+        Vector2 rayOrigin = (Vector2)transform.position - Vector2.up * playerHeight;
+        RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, 0.2f, 
+                           LayerMask.GetMask("Ground"));
+        isGrounded = hit.collider != null;
+        Debug.DrawRay(rayOrigin, Vector2.down * 0.2f, Color.red);
+        Debug.Log("Origin: " + rayOrigin.y + " | Hit: " + hit.collider?.name + 
+        " | Grounded: " + isGrounded);
         coyoteTimer -= Time.deltaTime;
         if (isGrounded) coyoteTimer = coyoteTime;
+
     }
 
-    void Jump(InputAction.CallbackContext context)
-    { // New method, auto-called
-        if (context.started && coyoteTimer > 0)
-        { // "started" = GetKeyDown
+    void Jump()
+    {
+        // Jump trigger (old way)
+        if (Input.GetKeyDown(KeyCode.Space) && coyoteTimer > 0)
+        {
             rb.linearVelocity = new Vector2(rb.linearVelocity.x, jumpForce);
             coyoteTimer = 0;
             transform.DOScaleY(0.8f, 0.1f).SetLoops(2, LoopType.Yoyo);
         }
-    }
 
-    void FlipSprite()
-    {
-        sr.flipX = rb.linearVelocity.x < 0; // Rare left
+        // Variable height
+        if (Input.GetKey(KeyCode.Space) && rb.linearVelocity.y > 0)
+        {
+            rb.linearVelocity += Vector2.up * Physics2D.gravity.y * 0.5f * Time.deltaTime;
+        }
+
     }
 
     void HealthUpdate()
@@ -137,6 +135,7 @@ public class Player : MonoBehaviour
 
         }
     }
+
     void TriggerBuildChoice()
     {
         Time.timeScale = 0;
