@@ -101,6 +101,13 @@ public class ParallaxScript : MonoBehaviour
 
         // ── Recycle: move leftmost to the right of rightmost ──────────────────
         Recycle();
+
+        // TEMP: show leftmost segment position every second
+        if (Time.frameCount % 60 == 0)
+            Debug.Log($"[Parallax] leftmost X={active[0].transform.position.x:F1}  " +
+                      $"segWidth={segmentWidth:F1}  " +
+                      $"camLeft={cam.transform.position.x - cam.orthographicSize * cam.aspect:F1}");
+
     }
 
     // ─── Recycling (reposition, never Destroy) ────────────────────────────────
@@ -144,11 +151,23 @@ public class ParallaxScript : MonoBehaviour
         BackgroundSegment sourcePrefab = newType == BiomeType.Forest
             ? forestPrefab : industryPrefab;
 
-        // Copy the sprite from the prefab's SpriteRenderer
         var targetSR = seg.GetComponent<SpriteRenderer>();
-        var sourceSR = sourcePrefab.GetComponent<SpriteRenderer>();
-        if (targetSR != null && sourceSR != null)
+        var sourceSR = sourcePrefab?.GetComponent<SpriteRenderer>();
+
+        Debug.Log($"[Parallax] SwapBiome → {newType} | " +
+                  $"targetSR={targetSR != null} | " +
+                  $"sourceSR={sourceSR != null} | " +
+                  $"sourceSprite={sourceSR?.sprite?.name ?? "NULL"} | " +
+                  $"industryPrefab={industryPrefab != null} | " +
+                  $"forest={PlayerScript.natureCount} industry={PlayerScript.industryCount}");
+
+        if (targetSR != null && sourceSR?.sprite != null)
+        {
             targetSR.sprite = sourceSR.sprite;
+            targetSR.color = sourceSR.color;
+            targetSR.sortingOrder = sourceSR.sortingOrder;
+        }
+
     }
 
     // ─── Initial Spawn (only called in Start) ────────────────────────────────
@@ -191,4 +210,5 @@ public class ParallaxScript : MonoBehaviour
         }
         return BiomeType.Forest;
     }
+
 }

@@ -75,6 +75,7 @@ public class GameOverManager : MonoBehaviour
         }
 
         gameOverPanel.SetActive(true);
+        AudioManager.Instance?.PlayGameOver();
 
         Debug.Log($"[GameOverManager] Game Over — Round={round}  " +
                   $"ratio={forest}:{industry}");

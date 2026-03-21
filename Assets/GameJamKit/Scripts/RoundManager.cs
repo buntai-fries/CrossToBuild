@@ -129,6 +129,7 @@ public class RoundManager : MonoBehaviour
         CurrentOrbTarget += orbIncrement;
 
         PlayerScript.Instance?.ResetOrbCount();
+        AudioManager.Instance?.PlayRoundComplete();
         buildChoicePanel.SetActive(false);
         panelOpen = false;
         Time.timeScale = 1f;
