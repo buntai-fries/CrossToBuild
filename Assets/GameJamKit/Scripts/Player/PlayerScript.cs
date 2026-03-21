@@ -1,40 +1,72 @@
-using DG.Tweening;
+//using DG.Tweening;
 using TMPro;
 using UnityEngine;
-using UnityEngine.InputSystem;
-[RequireComponent(typeof(Rigidbody2D), typeof(SpriteRenderer))]
 
+[RequireComponent(typeof(Rigidbody2D), typeof(SpriteRenderer))]
 public class Player : MonoBehaviour
 {
+    // ─── Inspector ───────────────────────────────────────────────────────────
+
     [Header("Movement")]
     public float jumpForce = 10f;
-    public float coyoteTime = 0.1f;
+    public float coyoteTime = 0.15f;
 
     [Header("Orb Collection")]
-    public int maxOrbs = 10;
     public float magnetRange = 2f;
-    public GameObject orbParticlePrefab; // Assign particle
+    public GameObject orbParticlePrefab;
 
     [Header("Health")]
     public float maxHealth = 100f;
-    public float currentHealth;
-    public float regenRate = 1f; // Forest good
-    public float drainRate = 0.5f; // Factory bad
-    public float targetRatio = 1.5f; // Nature:industry ideal
+    public float baseDrainRate = 2f;          // HP/sec – always draining
+    public float industryDrainMultiplier = 3f; // Multiplier when ratio is 0:1 (all industry)
+    public float regenRate = 1f;            // HP/sec bonus regen when ratio > 5:1 (forest heavy)
+
+    [Header("Biome Balance")]
+    [Tooltip("5 means 5:1 forest:industry is the balanced point")]
+    public float balancedRatio = 5f;
 
     [Header("UI Refs")]
-    public TextMeshProUGUI orbCounter;
-    public TextMeshProUGUI healthBar; // Image.fillAmount script if Slider
+    public TextMeshProUGUI orbCounterText;
+    public TextMeshProUGUI healthText;
 
-    // Privates
+    // ─── Static biome counters (set by RoundManager) ─────────────────────────
+
+    /// <summary>Number of Forest biome builds chosen by player.</summary>
+    public static int natureCount = 0;
+    /// <summary>Number of Industry biome builds chosen by player.</summary>
+    public static int industryCount = 0;
+
+    // ─── Singleton ───────────────────────────────────────────────────────────
+
+    public static Player Instance { get; private set; }
+
+    // ─── Public accessors for other systems ──────────────────────────────────
+
+    public int CurrentOrbs { get; private set; }
+    public float CurrentHealth => currentHealth;
+
+    /// <summary>Returns (forestBuilt, industryBuilt) for parallax/spawner.</summary>
+    public static (int forest, int industry) GetBiomeCounts() => (natureCount, industryCount);
+
+    /// <summary>Raw forest:industry ratio. Clamped to prevent Lerp issues.</summary>
+    public static float GetRatio()
+        => (float)natureCount / Mathf.Max(1, industryCount);
+
+    // ─── Private ─────────────────────────────────────────────────────────────
+
     private Rigidbody2D rb;
     private SpriteRenderer sr;
-    private Animator anim; // Optional
-    private int currentOrbs = 0;
-    public static int natureCount = 0, industryCount = 0; // Global ratio
+    private float currentHealth;
     private bool isGrounded;
     private float coyoteTimer;
-    private float industryExcess; // Calc from builds
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    void Awake()
+    {
+        if (Instance != null) { Destroy(gameObject); return; }
+        Instance = this;
+    }
 
     void Start()
     {
@@ -42,122 +74,117 @@ public class Player : MonoBehaviour
         sr = GetComponent<SpriteRenderer>();
         currentHealth = maxHealth;
         UpdateUI();
-
     }
 
-    // Update is called once per frame
     void Update()
     {
         GroundCheck();
-        HealthUpdate();
-        Jump();
+        HandleJump();
+        HandleHealth();
 
+        // Lock X – the world scrolls, not the player
+        transform.position = new Vector3(0f, transform.position.y, 0f);
     }
+
+    // ─── Ground & Jump ───────────────────────────────────────────────────────
 
     void GroundCheck()
     {
-        float playerHeight = sr.bounds.size.y * 0.5f - 0.05f;
-        Vector2 rayOrigin = (Vector2)transform.position - Vector2.up * playerHeight;
-        RaycastHit2D hit = Physics2D.Raycast(rayOrigin, Vector2.down, 0.2f, 
-                           LayerMask.GetMask("Ground"));
+        float halfH = sr.bounds.size.y * 0.5f - 0.05f;
+        Vector2 origin = (Vector2)transform.position - Vector2.up * halfH;
+        RaycastHit2D hit = Physics2D.Raycast(origin, Vector2.down, 0.2f,
+                                              LayerMask.GetMask("Ground"));
         isGrounded = hit.collider != null;
-        Debug.DrawRay(rayOrigin, Vector2.down * 0.2f, Color.red);
-        Debug.Log("Origin: " + rayOrigin.y + " | Hit: " + hit.collider?.name + 
-        " | Grounded: " + isGrounded);
-        coyoteTimer -= Time.deltaTime;
-        if (isGrounded) coyoteTimer = coyoteTime;
+        Debug.DrawRay(origin, Vector2.down * 0.2f, isGrounded ? Color.green : Color.red);
 
+        if (isGrounded) coyoteTimer = coyoteTime;
+        else coyoteTimer -= Time.deltaTime;
     }
 
-    void Jump()
+    void HandleJump()
     {
-        // Jump trigger (old way)
-        if (Input.GetKeyDown(KeyCode.Space) && coyoteTimer > 0)
+        if (Input.GetKeyDown(KeyCode.Space) && coyoteTimer > 0f)
         {
             rb.linearVelocity = new Vector2(rb.linearVelocity.x, jumpForce);
-            coyoteTimer = 0;
-            transform.DOScaleY(0.8f, 0.1f).SetLoops(2, LoopType.Yoyo);
+            coyoteTimer = 0f;
+            // Squash-and-stretch feedback
+            //transform.DOScaleY(0.8f, 0.1f).SetLoops(2, LoopType.Yoyo);
         }
 
-        // Variable height
-        if (Input.GetKey(KeyCode.Space) && rb.linearVelocity.y > 0)
-        {
+        // Variable height – release space early for shorter jump
+        if (Input.GetKey(KeyCode.Space) && rb.linearVelocity.y > 0f)
             rb.linearVelocity += Vector2.up * Physics2D.gravity.y * 0.5f * Time.deltaTime;
-        }
-
     }
 
-    void HealthUpdate()
+    // ─── Health ──────────────────────────────────────────────────────────────
+
+    void HandleHealth()
     {
-        float ratio = (float)natureCount / (industryCount + 1); // Avoid div0
-        industryExcess = Mathf.Max(0, (2f - ratio)); // >2:1 bad
+        float ratio = GetRatio(); // forest:industry
 
-        if (ratio > targetRatio)
+        // t=0 → all industry (worst), t=1 → balanced or better
+        float t = Mathf.Clamp01(ratio / balancedRatio);
+        float drainMult = Mathf.Lerp(industryDrainMultiplier, 1f, t);
+
+        // Always draining – multiplier controls speed
+        currentHealth -= baseDrainRate * drainMult * Time.deltaTime;
+
+        // Bonus regen only when clearly forest-heavy (ratio > balancedRatio)
+        if (ratio > balancedRatio)
         {
-            currentHealth += regenRate * Time.deltaTime;
+            // Scales gently: 5:1 = tiny regen, 10:1 = full regenRate
+            float regenScale = Mathf.Clamp01((ratio - balancedRatio) / balancedRatio);
+            currentHealth += regenRate * regenScale * Time.deltaTime;
         }
 
-        else
-        {
-            currentHealth -= drainRate * industryExcess * Time.deltaTime;
-        }
+        currentHealth = Mathf.Clamp(currentHealth, 0f, maxHealth);
+        if (currentHealth <= 0f) Die();
 
-        currentHealth = Mathf.Clamp(currentHealth, 0, maxHealth);
-
-        if (currentHealth <= 0) Die();
         UpdateUI();
     }
 
-    void UpdateUI()
-    {
-        orbCounter.text = $"{currentOrbs}/{maxOrbs}";
-        healthBar.text = $"{Mathf.Round(currentHealth)}%";
+    // ─── Orb Collection ──────────────────────────────────────────────────────
 
-    }
-
+    /// <summary>Called by OrbPickup when player touches an orb.</summary>
     public void CollectOrb()
     {
-        if (currentOrbs < maxOrbs)
-        {
-            currentOrbs++;
-            // Magnet future orbs in range
-            Collider2D[] nearby = Physics2D.OverlapCircleAll(transform.position, magnetRange,
-                                  LayerMask.GetMask("Orb"));
-            foreach (var orb in nearby)
-            {
-                orb.transform.DOMove(transform.position, 0.3f).OnComplete(() =>
-                Destroy(orb.gameObject));
-            }
+        CurrentOrbs++;
 
+        if (orbParticlePrefab)
             Instantiate(orbParticlePrefab, transform.position, Quaternion.identity);
-            if (currentOrbs >= maxOrbs) TriggerBuildChoice();
-            UpdateUI();
 
-        }
+        // Notify round manager – it decides if round is complete
+        RoundManager.Instance?.OnOrbCollected(CurrentOrbs);
+
+        UpdateUI();
     }
 
-    void TriggerBuildChoice()
+    /// <summary>Called by RoundManager after a build choice is made.</summary>
+    public void ResetOrbCount()
     {
-        Time.timeScale = 0;
-
+        CurrentOrbs = 0;
+        UpdateUI();
     }
 
-    void Die()
+    // ─── UI ──────────────────────────────────────────────────────────────────
+
+    void UpdateUI()
     {
-        // Fade/DOTween to dystopia scene
-        DOTween.To(() => currentHealth, x => currentHealth = x, 0, 1f).OnComplete(() =>
-        UnityEngine.SceneManagement.SceneManager.LoadScene(0));
+        int target = RoundManager.Instance != null
+            ? RoundManager.Instance.CurrentOrbTarget
+            : 5;
 
+        if (orbCounterText) orbCounterText.text = $"{CurrentOrbs} / {target}";
+        if (healthText) healthText.text = $"HP  {Mathf.Round(currentHealth)}";
     }
 
-    void OnTriggerEnter2D(Collider2D other)
+    // ─── Death ───────────────────────────────────────────────────────────────
+
+    public void Die()
     {
-        if (other.CompareTag("Orb"))
-        {
-            CollectOrb();
-            Destroy(other.gameObject);
-
-        }
+        Debug.Log("Player died – hook up GameOver screen here.");
+        enabled = false;
+        rb.simulated = false;
+        // TODO: show GameOver canvas
     }
-
 }
