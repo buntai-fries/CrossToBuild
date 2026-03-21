@@ -1,9 +1,5 @@
 using UnityEngine;
 
-/// <summary>
-/// Single source of truth for world scroll speed.
-/// All scrolling objects (parallax, ground, platforms, orbs) read from here.
-/// </summary>
 public class GameManager : MonoBehaviour
 {
     public static GameManager Instance { get; private set; }

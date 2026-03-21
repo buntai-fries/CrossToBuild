@@ -11,6 +11,7 @@ GameObject:
   - component: {fileID: 1524219523789837594}
   - component: {fileID: 543968416846674877}
   - component: {fileID: -5410031017463192478}
+  - component: {fileID: 2675914575627865927}
   m_Layer: 0
   m_Name: Collectibles
   m_TagString: Orb
@@ -129,3 +130,16 @@ CapsuleCollider2D:
   m_Offset: {x: 0, y: 0}
   m_Size: {x: 1, y: 1}
   m_Direction: 0
+--- !u!114 &2675914575627865927
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8159808343082352306}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a3b550464711e994aa1fcb3d31e82ec1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::OrbPickup
+  destroyOffscreenX: -15

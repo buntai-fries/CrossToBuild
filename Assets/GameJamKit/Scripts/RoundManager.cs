@@ -2,45 +2,42 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-/// <summary>
-/// Controls round progression:
-///   Round 1 → collect 5 orbs  → pick biome
-///   Round 2 → collect 10 orbs → pick biome
-///   Round N → collect N*5 orbs → pick biome  (endless)
-///
-/// On round complete:
-///   1. Game pauses (Time.timeScale = 0)
-///   2. BuildChoicePanel appears
-///   3. Player picks Forest or Industry
-///   4. Corresponding static counter on Player increments
-///   5. Game resumes, orb count resets, next target set
-/// </summary>
 public class RoundManager : MonoBehaviour
 {
-    // ─── Singleton ───────────────────────────────────────────────────────────
-
     public static RoundManager Instance { get; private set; }
-
-    // ─── Inspector ───────────────────────────────────────────────────────────
 
     [Header("Round Config")]
     [SerializeField] private int startingOrbTarget = 5;
     [SerializeField] private int orbIncrement = 5;
 
-    [Header("UI – wire these up in the Inspector")]
-    [SerializeField] private GameObject buildChoicePanel;  // The whole popup
+    [Header("Health Reward Per Round")]
+    [Tooltip("HP given on round complete at Round 1.")]
+    [SerializeField] private float baseHealthReward = 25f;
+
+    [Tooltip("Reward shrinks each round. 2 means Round 1=25, Round 5=17, Round 10=7.")]
+    [SerializeField] private float rewardDecreasePerRound = 2f;
+
+    [Tooltip("Minimum reward regardless of round. PlayerScript always gets something.")]
+    [SerializeField] private float minHealthReward = 8f;
+
+    [Header("UI — wire in Inspector")]
+    [SerializeField] private GameObject buildChoicePanel;
     [SerializeField] private Button forestButton;
     [SerializeField] private Button industryButton;
-    [SerializeField] private TextMeshProUGUI roundLabelText;     // "Round 1", "Round 2"…
-    [SerializeField] private TextMeshProUGUI buildPromptText;    // Flavour text
-    [SerializeField] private TextMeshProUGUI ratioDisplayText;   // Shows current ratio
+    [SerializeField] private TextMeshProUGUI roundLabelText;
+    [SerializeField] private TextMeshProUGUI buildPromptText;
+    [SerializeField] private TextMeshProUGUI ratioDisplayText;
 
-    // ─── State ───────────────────────────────────────────────────────────────
+    // ─── Public state ─────────────────────────────────────────────────────────
 
-    private int currentRound = 1;
-
-    /// <summary>Current orb threshold – read by Player to update HUD.</summary>
     public int CurrentOrbTarget { get; private set; }
+
+    /// <summary>Exposed so PlayerScript.HandleHealth() can scale drain by round.</summary>
+    public int CurrentRound { get; private set; } = 1;
+
+    // ─── Private ─────────────────────────────────────────────────────────────
+
+    private bool panelOpen = false;
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -49,29 +46,42 @@ public class RoundManager : MonoBehaviour
         if (Instance != null) { Destroy(gameObject); return; }
         Instance = this;
         CurrentOrbTarget = startingOrbTarget;
+        CurrentRound = 1;
     }
 
     void Start()
     {
-        // Safety check – these must be assigned in the Inspector
+        bool valid = true;
         if (buildChoicePanel == null)
-            Debug.LogError("[RoundManager] buildChoicePanel is not assigned!");
-        if (forestButton == null || industryButton == null)
-            Debug.LogError("[RoundManager] Forest/Industry buttons are not assigned!");
+        { Debug.LogError("[RoundManager] buildChoicePanel not assigned!"); valid = false; }
+        if (forestButton == null)
+        { Debug.LogError("[RoundManager] forestButton not assigned!"); valid = false; }
+        if (industryButton == null)
+        { Debug.LogError("[RoundManager] industryButton not assigned!"); valid = false; }
+
+        if (!valid) { enabled = false; return; }
+
+        forestButton.onClick.RemoveAllListeners();
+        industryButton.onClick.RemoveAllListeners();
+        forestButton.onClick.AddListener(() => OnBuildChosen(true));
+        industryButton.onClick.AddListener(() => OnBuildChosen(false));
 
         buildChoicePanel.SetActive(false);
-
-        forestButton.onClick.AddListener(() => OnBuildChosen(isForest: true));
-        industryButton.onClick.AddListener(() => OnBuildChosen(isForest: false));
+        panelOpen = false;
 
         RefreshRoundLabel();
+
+        Debug.Log($"[RoundManager] Ready — Round {CurrentRound}  target={CurrentOrbTarget}");
     }
 
-    // ─── Called by Player ────────────────────────────────────────────────────
+    // ─── Called by PlayerScript ────────────────────────────────────────────────────
 
-    /// <summary>Player calls this every time it picks up an orb.</summary>
     public void OnOrbCollected(int totalOrbsThisRound)
     {
+        if (panelOpen) return;
+
+        Debug.Log($"[RoundManager] Orbs: {totalOrbsThisRound}/{CurrentOrbTarget}");
+
         if (totalOrbsThisRound >= CurrentOrbTarget)
             ShowBuildChoice();
     }
@@ -80,75 +90,79 @@ public class RoundManager : MonoBehaviour
 
     void ShowBuildChoice()
     {
-        // Pause everything except UI
+        if (panelOpen) return;
+        panelOpen = true;
+
         Time.timeScale = 0f;
 
-        // Refresh the ratio display
-        int f = Player.natureCount, i = Player.industryCount;
-        if (ratioDisplayText)
-            ratioDisplayText.text = $"Current ratio  {f}:{i}  " + GetRatioVerdict(f, i);
+        int f = PlayerScript.natureCount, i = PlayerScript.industryCount;
 
-        if (buildPromptText)
-            buildPromptText.text = GetBuildFlavourText(f, i);
+        if (ratioDisplayText != null)
+            ratioDisplayText.text = $"Ratio  {f} : {i}   {GetVerdict(f, i)}";
+
+        if (buildPromptText != null)
+            buildPromptText.text = GetFlavour(f, i);
 
         buildChoicePanel.SetActive(true);
+
+        Debug.Log($"[RoundManager] Panel opened — Round {CurrentRound}  " +
+                  $"ratio={f}:{i}");
     }
 
     void OnBuildChosen(bool isForest)
     {
-        if (isForest)
-            Player.natureCount++;
-        else
-            Player.industryCount++;
+        if (isForest) PlayerScript.natureCount++;
+        else PlayerScript.industryCount++;
 
-        // Advance round
-        currentRound++;
+        // ── Health reward — decreases each round ──────────────────────────────
+        float reward = Mathf.Max(
+            minHealthReward,
+            baseHealthReward - (CurrentRound - 1) * rewardDecreasePerRound
+        );
+        PlayerScript.Instance?.AddHealth(reward);
+
+        Debug.Log($"[RoundManager] Choice: {(isForest ? "Forest" : "Industry")}  " +
+                  $"+{reward:F0}HP  ratio={PlayerScript.natureCount}:{PlayerScript.industryCount}");
+
+        // ── Advance round ─────────────────────────────────────────────────────
+        CurrentRound++;
         CurrentOrbTarget += orbIncrement;
 
-        // Reset player orb count
-        Player.Instance?.ResetOrbCount();
-
-        // Hide panel & resume
+        PlayerScript.Instance?.ResetOrbCount();
         buildChoicePanel.SetActive(false);
+        panelOpen = false;
         Time.timeScale = 1f;
 
         RefreshRoundLabel();
 
-        Debug.Log($"[RoundManager] Round {currentRound} started. " +
-                  $"Target: {CurrentOrbTarget} orbs. " +
-                  $"Ratio: {Player.natureCount}:{Player.industryCount}");
+        Debug.Log($"[RoundManager] Round {CurrentRound} starts — " +
+                  $"target={CurrentOrbTarget}");
     }
 
-    // ─── UI Helpers ──────────────────────────────────────────────────────────
+    // ─── Helpers ─────────────────────────────────────────────────────────────
 
     void RefreshRoundLabel()
     {
-        if (roundLabelText)
-            roundLabelText.text = $"Round {currentRound}";
+        if (roundLabelText != null)
+            roundLabelText.text = $"Round {CurrentRound}";
     }
 
-    /// <summary>Human-readable verdict of current ratio.</summary>
-    static string GetRatioVerdict(int forest, int industry)
+    static string GetVerdict(int f, int i)
     {
-        if (industry == 0) return "(forest only – very easy)";
-
-        float r = (float)forest / industry;
-        if (r > 5f) return "(forest heavy – healing, slow)";
-        if (r == 5f) return "(balanced ✓)";
-        if (r >= 3f) return "(slightly industry)";
-        return "(industry heavy – hard!)";
+        if (i == 0) return "(all forest)";
+        float r = (float)f / i;
+        if (r >= 5f) return "balanced";
+        if (r >= 3f) return "slightly industry";
+        return "industry heavy!";
     }
 
-    /// <summary>Flavour text nudging the player toward balance.</summary>
-    static string GetBuildFlavourText(int forest, int industry)
+    static string GetFlavour(int f, int i)
     {
-        if (industry == 0 && forest > 2)
-            return "You're all forest. Industry picks will make things harder – but more exciting.";
-        if (forest == 0 && industry > 0)
-            return "Pure industry! Your health is draining fast. Plant some trees!";
-        float r = (float)forest / Mathf.Max(1, industry);
-        if (r > 5f) return "Very forest-heavy. Consider industry to increase difficulty.";
-        if (r < 2f) return "Industry is dominating! Build forest to stabilise your health.";
-        return "Pick your next biome. The 5:1 ratio is balanced.";
+        if (i == 0 && f > 2) return "All forest — industry will make things harder.";
+        if (f == 0) return "Pure industry! Build forest to slow health drain.";
+        float r = (float)f / Mathf.Max(1, i);
+        if (r > 5f) return "Forest heavy — good health, slow drain. Add industry?";
+        if (r < 2f) return "Industry heavy — health draining fast. Build forest!";
+        return "Near the 5:1 balance. Either choice is valid.";
     }
 }

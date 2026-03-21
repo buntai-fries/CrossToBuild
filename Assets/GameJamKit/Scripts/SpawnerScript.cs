@@ -1,62 +1,48 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-/// <summary>
-/// Spawns orbs off the right edge of the screen.
-/// 
-/// BIOME AWARENESS:
-///   Queries ParallaxScript.GetBiomeAt(spawnX) to find what biome is
-///   at the spawn point. Forest → high orb chance. Industry → low.
-///
-/// HEIGHT AWARENESS:
-///   Orbs spawn at ground level OR at registered platform heights.
-///   Platforms call SpawnManager.RegisterPlatform / UnregisterPlatform
-///   when they enter/exit the scene. SpawnManager picks a random
-///   available height each time an orb spawns.
-///
-/// All spawned orbs scroll left via OrbPickup.cs (already written).
-/// </summary>
-public class SpawnerScript : MonoBehaviour
+public class SpawnManager : MonoBehaviour
 {
-    // ─── Singleton ───────────────────────────────────────────────────────────
-    public static SpawnerScript Instance { get; private set; }
-
-    // ─── Inspector ───────────────────────────────────────────────────────────
+    public static SpawnManager Instance { get; private set; }
 
     [Header("Orb Prefab")]
     [SerializeField] private GameObject orbPrefab;
 
-    [Header("Spawn X")]
-    [Tooltip("How far past the right camera edge orbs spawn. 1–2 units works well.")]
+    [Header("Spawn Timing")]
+    [Tooltip("Seconds between spawn attempts. Recommended: 2")]
+    [SerializeField] private float spawnInterval = 2f;
+
+    [Header("Max Orbs On Screen At Once")]
+    [Tooltip("Hard cap to prevent clusters. Recommended: 3")]
+    [SerializeField] private int maxOrbsAlive = 3;
+
+    [Header("Orb Chances (0 to 1)")]
+    [Range(0f, 1f)]
+    [SerializeField] private float forestOrbChance = 0.65f;
+    [Range(0f, 1f)]
+    [SerializeField] private float industryOrbChance = 0.25f;
+
+    [Header("Spawn Position")]
+    [Tooltip("Extra units past the right camera edge. 1.5 is safe.")]
     [SerializeField] private float spawnXPadding = 1.5f;
 
-    [Header("Orb Chances by Biome")]
-    [Range(0f, 1f)]
-    [SerializeField] private float forestOrbChance = 0.60f; // 60 % chance per interval
-    [Range(0f, 1f)]
-    [SerializeField] private float industryOrbChance = 0.20f; // 20 % chance per interval
+    [Tooltip("Y of the ground surface TOP. " +
+             "Select Ground tilemap → check Y in Transform → add 0.5. " +
+             "Example: ground Transform Y = -3 → set this to -2.5")]
+    [SerializeField] private float groundY = -2f;
 
-    [Header("Spawn Interval")]
-    [Tooltip("Seconds between each spawn attempt.")]
-    [SerializeField] private float spawnInterval = 1.2f;
+    [Tooltip("How high above ground/platform the orb floats.")]
+    [SerializeField] private float orbFloatHeight = 0.6f;
 
-    [Header("Heights")]
-    [Tooltip("Y position of the ground. Orbs can always spawn here.")]
-    [SerializeField] private float groundY = -2.2f;   // Match your ground tile Y + tile half-height
-
-    [Tooltip("Extra fixed heights before platforms register dynamically (optional). " +
-             "You can pre-fill this with test platform heights in the inspector.")]
+    [Tooltip("Optional fixed platform heights before dynamic platforms exist.")]
     [SerializeField] private float[] staticPlatformHeights;
 
-    // ─── Private ─────────────────────────────────────────────────────────────
+    // ─── Runtime ─────────────────────────────────────────────────────────────
 
     private Camera cam;
     private float timer;
-
-    /// <summary>
-    /// Dynamic platform Y positions.
-    /// Platform scripts call RegisterPlatform / UnregisterPlatform.
-    /// </summary>
+    private float safeInterval;
+    private readonly List<GameObject> liveOrbs = new();
     private readonly List<float> platformYs = new();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -69,86 +55,128 @@ public class SpawnerScript : MonoBehaviour
 
     void Start()
     {
+        // ── Null checks ───────────────────────────────────────────────────────
         cam = Camera.main;
+        if (cam == null)
+        {
+            Debug.LogError("[SpawnManager] Camera.main not found! " +
+                           "Make sure Main Camera tag is set to 'MainCamera'.");
+            enabled = false;
+            return;
+        }
 
-        // Pre-load any static test heights you set in the inspector
+        if (orbPrefab == null)
+        {
+            Debug.LogError("[SpawnManager] orbPrefab not assigned in inspector!");
+            enabled = false;
+            return;
+        }
+
+        // ── Enforce minimum interval ──────────────────────────────────────────
+        safeInterval = Mathf.Max(spawnInterval, 1.5f);
+        if (safeInterval != spawnInterval)
+            Debug.LogWarning($"[SpawnManager] spawnInterval was {spawnInterval}s — " +
+                             $"clamped to 1.5s minimum. Please set Spawn Interval = 2 in Inspector.");
+
+        // Delay first spawn so player has time to settle
+        timer = safeInterval * 0.5f;
+
+        // ── Load static platform heights ──────────────────────────────────────
         if (staticPlatformHeights != null)
             foreach (float h in staticPlatformHeights)
                 platformYs.Add(h);
+
+        // ── Log spawn X so we can verify it's off-screen ──────────────────────
+        float debugSpawnX = cam.transform.position.x
+                          + cam.orthographicSize * cam.aspect
+                          + spawnXPadding;
+
+        Debug.Log($"[SpawnManager] Ready — " +
+                  $"interval={safeInterval}s  " +
+                  $"maxAlive={maxOrbsAlive}  " +
+                  $"camX={cam.transform.position.x:F1}  " +
+                  $"orthoSize={cam.orthographicSize:F1}  " +
+                  $"aspect={cam.aspect:F2}  " +
+                  $"spawnX={debugSpawnX:F1}  " +
+                  $"groundY={groundY}");
     }
 
     void Update()
     {
-        if (Time.timeScale == 0f) return; // Paused during build choice
+        if (Time.timeScale == 0f) return;
+
+        // Clean up orbs that were destroyed (collected or off-screen)
+        liveOrbs.RemoveAll(o => o == null);
 
         timer += Time.deltaTime;
-        if (timer < spawnInterval) return;
+        if (timer < safeInterval) return;
         timer = 0f;
 
         TrySpawnOrb();
     }
 
-    // ─── Orb Spawning ────────────────────────────────────────────────────────
+    // ─── Spawning ─────────────────────────────────────────────────────────────
 
     void TrySpawnOrb()
     {
-        // Spawn X = just off the right edge of the camera
+        // Hard cap — never spawn if too many orbs already exist
+        if (liveOrbs.Count >= maxOrbsAlive)
+        {
+            Debug.Log($"[SpawnManager] Cap reached ({liveOrbs.Count}/{maxOrbsAlive}) — skip.");
+            return;
+        }
+
+        // Always spawn relative to camera right edge
+        // Camera X is fixed (camera doesn't move horizontally)
+        // This correctly places orbs off-screen regardless of player position
         float spawnX = cam.transform.position.x
                      + cam.orthographicSize * cam.aspect
                      + spawnXPadding;
 
-        // Ask parallax what biome is visible at spawnX
+        // Ask parallax what biome is at spawnX
         BiomeType biome = ParallaxScript.Instance != null
             ? ParallaxScript.Instance.GetBiomeAt(spawnX)
             : BiomeType.Forest;
 
         float chance = biome == BiomeType.Forest ? forestOrbChance : industryOrbChance;
 
-        if (Random.value > chance) return; // Roll failed – no orb this interval
+        // Roll for spawn
+        if (Random.value > chance)
+        {
+            Debug.Log($"[SpawnManager] Roll failed (chance={chance * 100f:F0}%) — no orb.");
+            return;
+        }
 
-        // Pick a spawn height: ground OR one of the registered platform heights
         float spawnY = PickSpawnHeight();
 
         GameObject orb = Instantiate(orbPrefab,
             new Vector3(spawnX, spawnY, 0f),
             Quaternion.identity);
 
-        // Optional: log for debugging
-        Debug.Log($"[SpawnManager] Orb spawned at ({spawnX:F1}, {spawnY:F1}) " +
-                  $"– biome: {biome}, chance was {chance * 100f:F0}%");
+        liveOrbs.Add(orb);
+
+        Debug.Log($"[SpawnManager] ✓ Orb at ({spawnX:F1}, {spawnY:F1})  " +
+                  $"biome={biome}  alive={liveOrbs.Count}/{maxOrbsAlive}");
     }
 
-    // ─── Height Selection ────────────────────────────────────────────────────
+    // ─── Height Selection ─────────────────────────────────────────────────────
 
     float PickSpawnHeight()
     {
-        // Build a combined list: ground + all live platform heights
-        // We do this inline to avoid allocations; list is short.
-        int totalOptions = 1 + platformYs.Count; // 1 = ground
-        int index = Random.Range(0, totalOptions);
-
-        if (index == 0)
-            return groundY + 0.5f; // Slightly above ground so orb floats visibly
-
-        return platformYs[index - 1] + 0.5f; // Slightly above platform surface
+        int total = 1 + platformYs.Count;
+        int index = Random.Range(0, total);
+        float baseY = index == 0 ? groundY : platformYs[index - 1];
+        return baseY + orbFloatHeight;
     }
 
-    // ─── Platform Registration API ───────────────────────────────────────────
+    // ─── Platform Registration (called by PlatformTile.cs) ───────────────────
 
-    /// <summary>
-    /// Call this from your platform script's Start() / OnEnable().
-    /// Adds the platform's Y to the pool of possible orb heights.
-    /// </summary>
     public void RegisterPlatform(float worldY)
     {
         if (!platformYs.Contains(worldY))
             platformYs.Add(worldY);
     }
 
-    /// <summary>
-    /// Call this from your platform script's OnDestroy() / OnDisable().
-    /// Removes the platform's Y so orbs stop trying to spawn there.
-    /// </summary>
     public void UnregisterPlatform(float worldY)
     {
         platformYs.Remove(worldY);

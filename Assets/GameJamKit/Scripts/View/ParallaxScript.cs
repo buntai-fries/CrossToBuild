@@ -168,7 +168,7 @@ public class ParallaxScript : MonoBehaviour
 
     BiomeType ChooseBiome()
     {
-        var (forestBuilt, industryBuilt) = Player.GetBiomeCounts();
+        var (forestBuilt, industryBuilt) = PlayerScript.GetBiomeCounts();
         int total = forestBuilt + industryBuilt;
         if (total == 0) return BiomeType.Forest;
 

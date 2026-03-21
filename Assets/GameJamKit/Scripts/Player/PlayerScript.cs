@@ -1,9 +1,8 @@
-//using DG.Tweening;
 using TMPro;
 using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody2D), typeof(SpriteRenderer))]
-public class Player : MonoBehaviour
+public class PlayerScript : MonoBehaviour
 {
     // ─── Inspector ───────────────────────────────────────────────────────────
 
@@ -11,54 +10,64 @@ public class Player : MonoBehaviour
     public float jumpForce = 10f;
     public float coyoteTime = 0.15f;
 
-    [Header("Orb Collection")]
-    public float magnetRange = 2f;
-    public GameObject orbParticlePrefab;
+    [Header("Health Drain — Round Scaling")]
+    [Tooltip("HP/sec drain at Round 1 when perfectly balanced. Keep this very low.")]
+    public float baseDrainRound1 = 0.5f;
 
-    [Header("Health")]
-    public float maxHealth = 100f;
-    public float baseDrainRate = 2f;          // HP/sec – always draining
-    public float industryDrainMultiplier = 3f; // Multiplier when ratio is 0:1 (all industry)
-    public float regenRate = 1f;            // HP/sec bonus regen when ratio > 5:1 (forest heavy)
+    [Tooltip("How much extra drain is added per round. " +
+             "0.3 means Round 1=0.5, Round 5=1.7, Round 10=3.2 HP/sec at balance.")]
+    public float drainPerRound = 0.3f;
+
+    [Tooltip("Maximum base drain regardless of round. Cap so it doesn't get absurd.")]
+    public float maxBaseDrain = 8f;
 
     [Header("Biome Balance")]
-    [Tooltip("5 means 5:1 forest:industry is the balanced point")]
+    [Tooltip("The ideal forest:industry ratio. 5 = 5:1")]
     public float balancedRatio = 5f;
+
+    [Tooltip("Drain multiplier when perfectly balanced (ratio = 5:1). Should be 1.0")]
+    public float balancedMultiplier = 1f;
+
+    [Tooltip("Drain multiplier when maximally unbalanced (pure industry, ratio = 0). " +
+             "3 means 3× drain at worst case.")]
+    public float maxImbalanceMultiplier = 3f;
+
+    [Tooltip("HP/sec regen when ratio is well above balanced. Keeps forest viable.")]
+    public float regenRate = 1f;
+
+    [Header("Orb Collection")]
+    [Tooltip("Min seconds between collections. Prevents same-frame multi-collect.")]
+    public float orbCollectCooldown = 0.3f;
+    public GameObject orbParticlePrefab;
 
     [Header("UI Refs")]
     public TextMeshProUGUI orbCounterText;
     public TextMeshProUGUI healthText;
 
-    // ─── Static biome counters (set by RoundManager) ─────────────────────────
-
-    /// <summary>Number of Forest biome builds chosen by player.</summary>
+    // ─── Static biome counters ────────────────────────────────────────────────
     public static int natureCount = 0;
-    /// <summary>Number of Industry biome builds chosen by player.</summary>
     public static int industryCount = 0;
 
     // ─── Singleton ───────────────────────────────────────────────────────────
+    public static PlayerScript Instance { get; private set; }
 
-    public static Player Instance { get; private set; }
-
-    // ─── Public accessors for other systems ──────────────────────────────────
-
+    // ─── Public accessors ────────────────────────────────────────────────────
     public int CurrentOrbs { get; private set; }
     public float CurrentHealth => currentHealth;
+    public float MaxHealth => maxHealth;
 
-    /// <summary>Returns (forestBuilt, industryBuilt) for parallax/spawner.</summary>
     public static (int forest, int industry) GetBiomeCounts() => (natureCount, industryCount);
-
-    /// <summary>Raw forest:industry ratio. Clamped to prevent Lerp issues.</summary>
-    public static float GetRatio()
-        => (float)natureCount / Mathf.Max(1, industryCount);
+    public static float GetRatio() => (float)natureCount / Mathf.Max(1, industryCount);
 
     // ─── Private ─────────────────────────────────────────────────────────────
-
     private Rigidbody2D rb;
     private SpriteRenderer sr;
+    private float maxHealth = 100f;
     private float currentHealth;
     private bool isGrounded;
     private float coyoteTimer;
+    private float startX;
+    private float lastCollectTime = -999f;
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -73,7 +82,10 @@ public class Player : MonoBehaviour
         rb = GetComponent<Rigidbody2D>();
         sr = GetComponent<SpriteRenderer>();
         currentHealth = maxHealth;
+        startX = transform.position.x;
         UpdateUI();
+
+        Debug.Log($"[Player] Ready — startX={startX}");
     }
 
     void Update()
@@ -81,12 +93,10 @@ public class Player : MonoBehaviour
         GroundCheck();
         HandleJump();
         HandleHealth();
-
-        // Lock X – the world scrolls, not the player
-        transform.position = new Vector3(0f, transform.position.y, 0f);
+        transform.position = new Vector3(startX, transform.position.y, 0f);
     }
 
-    // ─── Ground & Jump ───────────────────────────────────────────────────────
+    // ─── Ground Check ─────────────────────────────────────────────────────────
 
     void GroundCheck()
     {
@@ -101,38 +111,51 @@ public class Player : MonoBehaviour
         else coyoteTimer -= Time.deltaTime;
     }
 
+    // ─── Jump ─────────────────────────────────────────────────────────────────
+
     void HandleJump()
     {
         if (Input.GetKeyDown(KeyCode.Space) && coyoteTimer > 0f)
         {
             rb.linearVelocity = new Vector2(rb.linearVelocity.x, jumpForce);
             coyoteTimer = 0f;
-            // Squash-and-stretch feedback
-            //transform.DOScaleY(0.8f, 0.1f).SetLoops(2, LoopType.Yoyo);
         }
 
-        // Variable height – release space early for shorter jump
         if (Input.GetKey(KeyCode.Space) && rb.linearVelocity.y > 0f)
             rb.linearVelocity += Vector2.up * Physics2D.gravity.y * 0.5f * Time.deltaTime;
     }
 
-    // ─── Health ──────────────────────────────────────────────────────────────
+    // ─── Health ───────────────────────────────────────────────────────────────
 
     void HandleHealth()
     {
-        float ratio = GetRatio(); // forest:industry
+        int round = RoundManager.Instance != null ? RoundManager.Instance.CurrentRound : 1;
+        float ratio = GetRatio();
 
-        // t=0 → all industry (worst), t=1 → balanced or better
+        // ── Base drain scales with round ──────────────────────────────────────
+        // Round 1 = baseDrainRound1, each round adds drainPerRound
+        // e.g. 0.5 + (1-1)*0.3 = 0.5 HP/s  →  round 10: 0.5 + 9*0.3 = 3.2 HP/s
+        float baseDrain = Mathf.Min(
+            baseDrainRound1 + (round - 1) * drainPerRound,
+            maxBaseDrain
+        );
+
+        // ── Biome multiplier ──────────────────────────────────────────────────
+        // t=1 → perfectly balanced (ratio == balancedRatio) → multiplier = 1
+        // t=0 → worst case (ratio = 0, pure industry)       → multiplier = max
+        // Clamped so going OVER the balanced ratio doesn't reduce below 1
         float t = Mathf.Clamp01(ratio / balancedRatio);
-        float drainMult = Mathf.Lerp(industryDrainMultiplier, 1f, t);
+        float biomeMultiplier = Mathf.Lerp(maxImbalanceMultiplier, balancedMultiplier, t);
 
-        // Always draining – multiplier controls speed
-        currentHealth -= baseDrainRate * drainMult * Time.deltaTime;
+        // ── Final drain ───────────────────────────────────────────────────────
+        float drain = baseDrain * biomeMultiplier;
+        currentHealth -= drain * Time.deltaTime;
 
-        // Bonus regen only when clearly forest-heavy (ratio > balancedRatio)
+        // ── Regen when forest-heavy ───────────────────────────────────────────
+        // Only kicks in when clearly above balanced ratio
+        // Scales gently so it's never overpowered
         if (ratio > balancedRatio)
         {
-            // Scales gently: 5:1 = tiny regen, 10:1 = full regenRate
             float regenScale = Mathf.Clamp01((ratio - balancedRatio) / balancedRatio);
             currentHealth += regenRate * regenScale * Time.deltaTime;
         }
@@ -145,46 +168,59 @@ public class Player : MonoBehaviour
 
     // ─── Orb Collection ──────────────────────────────────────────────────────
 
-    /// <summary>Called by OrbPickup when player touches an orb.</summary>
     public void CollectOrb()
     {
+        float timeSinceLast = Time.time - lastCollectTime;
+        if (timeSinceLast < orbCollectCooldown)
+        {
+            Debug.LogWarning($"[Player] CollectOrb ignored — {timeSinceLast:F3}s since last " +
+                             $"(cooldown={orbCollectCooldown}s)");
+            return;
+        }
+
+        lastCollectTime = Time.time;
         CurrentOrbs++;
 
         if (orbParticlePrefab)
             Instantiate(orbParticlePrefab, transform.position, Quaternion.identity);
 
-        // Notify round manager – it decides if round is complete
-        RoundManager.Instance?.OnOrbCollected(CurrentOrbs);
+        Debug.Log($"[Player] Orb collected! " +
+                  $"{CurrentOrbs}/{RoundManager.Instance?.CurrentOrbTarget}");
 
+        RoundManager.Instance?.OnOrbCollected(CurrentOrbs);
         UpdateUI();
     }
 
-    /// <summary>Called by RoundManager after a build choice is made.</summary>
     public void ResetOrbCount()
     {
         CurrentOrbs = 0;
+        lastCollectTime = -999f;
         UpdateUI();
     }
 
-    // ─── UI ──────────────────────────────────────────────────────────────────
+    public void AddHealth(float amount)
+    {
+        currentHealth = Mathf.Clamp(currentHealth + amount, 0f, maxHealth);
+        UpdateUI();
+    }
+
+    // ─── UI ───────────────────────────────────────────────────────────────────
 
     void UpdateUI()
     {
         int target = RoundManager.Instance != null
-            ? RoundManager.Instance.CurrentOrbTarget
-            : 5;
+            ? RoundManager.Instance.CurrentOrbTarget : 5;
 
         if (orbCounterText) orbCounterText.text = $"{CurrentOrbs} / {target}";
         if (healthText) healthText.text = $"HP  {Mathf.Round(currentHealth)}";
     }
 
-    // ─── Death ───────────────────────────────────────────────────────────────
+    // ─── Death ────────────────────────────────────────────────────────────────
 
     public void Die()
     {
-        Debug.Log("Player died – hook up GameOver screen here.");
+        Debug.Log("[Player] Died — hook up GameOver here.");
         enabled = false;
         rb.simulated = false;
-        // TODO: show GameOver canvas
     }
 }
